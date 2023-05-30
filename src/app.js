@@ -1,4 +1,4 @@
-import express, { request, response } from "express";
+import express, { query, request, response } from "express";
 import cors from "cors"
 import { v4 as uuid} from "uuid";
 import jwt from "jsonwebtoken"
@@ -34,18 +34,23 @@ app.get("/", (request, response)=>{
 
 //middlewares
 const verifyAuthTokenMiddleware = (request, response, next)=> {
-    let token = request.headers.authorization
+/*     let token = decodeToken(request) */
+    const token = decodeToken(request).notDecoded
 
     if(!token){
         return response.status(401).json({message: "Missing authorization headers"})
     }
-
-    token = token.split(" ")[1]
+  
 
     jwt.verify(token, SECRET_KEY, (error, decoded)=>{
 
         if(error){
             return response.status(401).json({message: "Unauthorized"})
+        }
+
+        const user = users.some((user)=> user.id === decoded.id)
+        if(!user){
+            return response.status(401).json({message: "Token invalid"})
         }
         next()
     })   
@@ -133,6 +138,18 @@ const verifyCredentialsMiddleware = (request, response, next)=>{
     next()
 }
 
+const verifyIfHasNotes = (request, response, next)=>{
+    const token = decodeToken(request).decoded
+    const userNote = userNotes.find((person)=> person.id === token.id)
+    
+    if(userNote.notes.length === 0){
+        return response.status(400).json({message: "The user doesn't have any notes"})
+    }
+    response.locals.token = token
+    next()
+    
+    
+}
 //rotas
 app.post("/user", userSchemaValidationMiddleware,  verifyEmailAvailabilityMiddleware,(request, response)=>{
     const {name, email, password} = request.body
@@ -170,12 +187,10 @@ app.post("/login", loginSchemaValidationMiddleware, verifyCredentialsMiddleware,
 })
 
 app.post("/notes", verifyAuthTokenMiddleware, notesSchemaValidationMiddleware, (request, response)=>{
-    let tokenReceived = request.headers.authorization
+    const token = decodeToken(request).decoded
     const {title, description} = request.body
 
-    const token = tokenReceived.split(' ')[1]
-    const tokenDecoded = jwt.decode(token)
-    const userNote = userNotes.find((person)=> person.id === tokenDecoded.id)
+    const userNote = userNotes.find((person)=> person.id === token.id)
 
     const newNotes = {
         id: uuid(), 
@@ -191,27 +206,42 @@ app.post("/notes", verifyAuthTokenMiddleware, notesSchemaValidationMiddleware, (
     })
 })
 
-app.get("/notes", verifyAuthTokenMiddleware, (request, response)=>{
-    let tokenReceived = request.headers.authorization
+app.get("/notes", verifyAuthTokenMiddleware, verifyIfHasNotes,(request, response)=>{
+    
+    const limit =  Number(request.query.limit) || 5
+    const page = Number(request.query.page) || 1
 
-    const token = tokenReceived.split(' ')[1]
-    const tokenDecoded = jwt.decode(token)
-    const userNote = userNotes.find((person)=> person.id === tokenDecoded.id)
+    const startIndex = (page - 1) * limit
+    const endIndex = page * limit
 
-    if(userNote.notes.length === 0){
-        return response.status(400).json({message: "The user doesn't have any notes"})
+    const userNote = userNotes.find((person)=> person.id === response.locals.token.id)
+    
+    const userNoteCopy = {...userNote}
+    const slicedNotes = userNoteCopy.notes.slice(startIndex, endIndex)
+    const numberOfPages = Math.ceil(userNoteCopy.notes.length / limit)
+
+    const notes = {
+        id: userNote.id,
+        email: userNote.email,
+        pages: numberOfPages,
+        notes: slicedNotes
+
     }
-    return response.status(200).json(userNote)
+
+    return response.status(200).json({
+        success: true,
+        data: notes,
+        message: "Data listed successfully."
+    })
 })
 
 app.put("/notes/:id", verifyAuthTokenMiddleware, notesSchemaValidationMiddleware, (request, response)=>{
-    const tokenReceived = request.headers.authorization
+    const token = decodeToken(request).decoded
+
     const {id} = request.params
     const {title, description} = request.body
 
-    const token = tokenReceived.split(' ')[1]
-    const tokenDecoded = jwt.decode(token)
-    const userNote = userNotes.find((person)=> person.id === tokenDecoded.id)
+    const userNote = userNotes.find((person)=> person.id === token.id)
     const note = userNote.notes.find((note)=> note.id === id )
 
     if(note === undefined){
@@ -229,12 +259,10 @@ app.put("/notes/:id", verifyAuthTokenMiddleware, notesSchemaValidationMiddleware
 })
 
 app.delete("/notes/:id", verifyAuthTokenMiddleware,(request, response)=>{
-    const tokenReceived = request.headers.authorization
+    const token = decodeToken(request).decoded
     const {id} = request.params
 
-    const token = tokenReceived.split(' ')[1]
-    const tokenDecoded = jwt.decode(token)
-    const userNote = userNotes.find((person)=> person.id === tokenDecoded.id)
+    const userNote = userNotes.find((person)=> person.id === token.id)
     const noteIndexToDelete = userNote.notes.findIndex((note)=> note.id === id )
 
     if(noteIndexToDelete === -1){
@@ -245,4 +273,9 @@ app.delete("/notes/:id", verifyAuthTokenMiddleware,(request, response)=>{
     return response.status(200).json({success: true, message: "The note was deleted"})
 })
 
- 
+function decodeToken(request){
+    const tokenReceived = request.headers.authorization
+    const token = tokenReceived.split(' ')[1]
+    const tokenDecoded = jwt.decode(token)
+    return {decoded: tokenDecoded, notDecoded: token}
+}
